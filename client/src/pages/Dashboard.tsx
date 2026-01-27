@@ -13,6 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LeadCard } from "@/components/LeadCard";
 import { StatsCard } from "@/components/StatsCard";
 import { Loader2, Search, Download, Target, Users, BarChart3, Sparkles, AlertTriangle, Shield } from "lucide-react";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { motion, AnimatePresence } from "framer-motion";
 import { useToast } from "@/hooks/use-toast";
 
@@ -70,7 +71,7 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-gradient-to-b from-background to-muted/30 pb-20">
       {/* Hero Header */}
-      <div className="bg-white border-b border-border/40 sticky top-0 z-10 backdrop-blur-md bg-white/80 supports-[backdrop-filter]:bg-white/60">
+      <div className="bg-background border-b border-border/40 sticky top-0 z-10 backdrop-blur-md bg-background/80 supports-[backdrop-filter]:bg-background/60">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex justify-between items-center">
             <div className="flex items-center gap-3">
@@ -82,6 +83,7 @@ export default function Dashboard() {
               </h1>
             </div>
             <div className="flex items-center gap-4">
+              <ThemeToggle />
               <Button variant="outline" size="sm" className="hidden sm:flex" asChild>
                 <a href={getExportUrl()} target="_blank" rel="noopener noreferrer">
                   <Download className="w-4 h-4 mr-2" />
