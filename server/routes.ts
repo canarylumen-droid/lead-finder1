@@ -1,25 +1,96 @@
 import type { Express } from "express";
 import type { Server } from "http";
-import { storage } from "./storage";
+import { WebSocketServer, WebSocket } from "ws";
+import { storage, generateDedupeHash } from "./storage";
 import { api } from "@shared/routes";
+import { paginationSchema } from "@shared/schema";
 import { z } from "zod";
-import { 
-  scrapeInstagramSearch, 
-  scrapeLinkedInSearch, 
-  getProxyConfigFromEnv,
-  qualifyLead,
-  type ScrapedProfile 
-} from "./scraper";
+import { workerPool } from "./worker-pool";
+import type { JobStats, LogEntry } from "@shared/schema";
+
+// Store WebSocket clients per job
+const jobClients: Map<number, Set<WebSocket>> = new Map();
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
 
-  // Get all leads
+  // Setup WebSocket server for real-time logs
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  
+  wss.on('connection', (ws) => {
+    let subscribedJobId: number | null = null;
+    
+    ws.on('message', (message) => {
+      try {
+        const data = JSON.parse(message.toString());
+        if (data.type === 'subscribe' && data.jobId) {
+          subscribedJobId = Number(data.jobId);
+          if (!jobClients.has(subscribedJobId)) {
+            jobClients.set(subscribedJobId, new Set());
+          }
+          jobClients.get(subscribedJobId)?.add(ws);
+        }
+      } catch (e) {
+        // Ignore invalid messages
+      }
+    });
+    
+    ws.on('close', () => {
+      if (subscribedJobId !== null) {
+        jobClients.get(subscribedJobId)?.delete(ws);
+      }
+    });
+  });
+
+  // Forward worker pool events to WebSocket clients
+  workerPool.on('log', (log: LogEntry) => {
+    const clients = jobClients.get(log.jobId);
+    if (clients) {
+      const message = JSON.stringify({ type: 'log', data: log });
+      clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(message);
+        }
+      });
+    }
+  });
+
+  workerPool.on('stats', (stats: JobStats) => {
+    const clients = jobClients.get(stats.jobId);
+    if (clients) {
+      const message = JSON.stringify({ type: 'stats', data: stats });
+      clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(message);
+        }
+      });
+    }
+  });
+
+  workerPool.on('complete', (jobId: number) => {
+    const clients = jobClients.get(jobId);
+    if (clients) {
+      const message = JSON.stringify({ type: 'complete', data: { jobId } });
+      clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(message);
+        }
+      });
+    }
+  });
+
+  // Get all leads with pagination
   app.get(api.leads.list.path, async (req, res) => {
-    const leads = await storage.getLeads();
-    res.json(leads);
+    try {
+      const params = paginationSchema.parse(req.query);
+      const result = await storage.getLeads(params);
+      res.json(result);
+    } catch (error) {
+      const result = await storage.getLeads();
+      res.json(result);
+    }
   });
 
   // Get stats
@@ -43,14 +114,12 @@ export async function registerRoutes(
     res.json(job);
   });
 
-  // Check proxy configuration status
-  app.get('/api/proxy-status', async (req, res) => {
-    const proxyConfig = getProxyConfigFromEnv();
-    res.json({
-      configured: !!proxyConfig,
-      host: proxyConfig?.host ? `${proxyConfig.host.substring(0, 10)}...` : null,
-      port: proxyConfig?.port || null,
-    });
+  // Get job logs
+  app.get('/api/jobs/:id/logs', async (req, res) => {
+    const jobId = Number(req.params.id);
+    const limit = Number(req.query.limit) || 100;
+    const logs = await storage.getJobLogs(jobId, limit);
+    res.json(logs);
   });
 
   // Start scraping job
@@ -58,90 +127,23 @@ export async function registerRoutes(
     try {
       const { platform, query, quantity, offering } = api.leads.scrape.input.parse(req.body);
       
-      // Check proxy configuration
-      const proxyConfig = getProxyConfigFromEnv();
-      
-      if (!proxyConfig) {
-        return res.status(400).json({
-          message: 'Proxy not configured. Real scraping requires rotating proxies.',
-          error: 'PROXY_REQUIRED',
-          instructions: 'Set environment variables: PROXY_HOST, PROXY_PORT, PROXY_USERNAME, PROXY_PASSWORD',
-          leads: [],
-        });
-      }
-
       // Create scrape job
       const job = await storage.createScrapeJob({
         platform,
         query,
         offering,
         quantity,
+        totalWorkers: 20,
       });
 
-      // Update job status to processing
-      await storage.updateScrapeJobStatus(job.id, 'processing');
+      // Start the job in the worker pool (async, doesn't block response)
+      workerPool.startJob(job.id, platform, query, offering, quantity);
 
-      let scrapedProfiles: ScrapedProfile[] = [];
-      
-      try {
-        if (platform === 'instagram' || platform === 'both') {
-          const instagramProfiles = await scrapeInstagramSearch(query, proxyConfig);
-          scrapedProfiles.push(...instagramProfiles);
-        }
-        
-        if (platform === 'linkedin' || platform === 'both') {
-          const linkedinProfiles = await scrapeLinkedInSearch(query, proxyConfig);
-          scrapedProfiles.push(...linkedinProfiles);
-        }
-
-        // Limit to requested quantity
-        scrapedProfiles = scrapedProfiles.slice(0, quantity);
-
-        // Qualify and save leads
-        const leadsToSave = scrapedProfiles.map(profile => {
-          const { isQualified, score } = qualifyLead(profile, offering);
-          return {
-            platform: profile.platform,
-            username: profile.username,
-            profileUrl: profile.profileUrl,
-            followerCount: profile.followerCount,
-            bio: profile.bio,
-            email: profile.email,
-            name: profile.name,
-            title: profile.title,
-            company: profile.company,
-            companySize: profile.companySize,
-            isQualified,
-            relevanceScore: score,
-            queryUsed: query,
-            metadata: {},
-          };
-        });
-
-        const savedLeads = await storage.createLeads(leadsToSave);
-        await storage.completeScrapeJob(job.id);
-
-        res.json({
-          message: `Successfully scraped ${savedLeads.length} leads`,
-          jobId: job.id.toString(),
-          leads: savedLeads,
-        });
-
-      } catch (scrapeError: any) {
-        await storage.updateScrapeJobStatus(job.id, 'failed', scrapeError.message);
-        
-        // Return specific error for proxy issues
-        if (scrapeError.message.includes('PROXY')) {
-          return res.status(400).json({
-            message: scrapeError.message,
-            error: 'SCRAPE_FAILED',
-            jobId: job.id.toString(),
-            leads: [],
-          });
-        }
-        
-        throw scrapeError;
-      }
+      res.json({
+        message: `Job started. Processing ${quantity} leads with 20 workers.`,
+        jobId: job.id.toString(),
+        leads: [],
+      });
 
     } catch (err) {
       if (err instanceof z.ZodError) {
@@ -151,16 +153,24 @@ export async function registerRoutes(
         });
       }
       console.error('Scrape error:', err);
-      res.status(500).json({ message: 'Failed to scrape leads', leads: [] });
+      res.status(500).json({ message: 'Failed to start scraping job', leads: [] });
     }
+  });
+
+  // Cancel a job
+  app.post('/api/jobs/:id/cancel', async (req, res) => {
+    const jobId = Number(req.params.id);
+    workerPool.cancelJob(jobId);
+    await storage.updateScrapeJobStatus(jobId, 'cancelled');
+    res.json({ message: 'Job cancelled' });
   });
 
   // Export leads as CSV
   app.get(api.leads.export.path, async (req, res) => {
-    const leads = await storage.getLeads();
-    const csvHeader = "ID,Platform,Username,Name,Title,Company,Profile URL,Followers,Bio,Email,Qualified,Score,Query,Scraped At\n";
-    const csvRows = leads.map(l => 
-      `${l.id},${l.platform},"${l.username}","${l.name || ''}","${l.title || ''}","${l.company || ''}",${l.profileUrl},${l.followerCount},"${(l.bio || '').replace(/"/g, '""')}",${l.email || ''},${l.isQualified},${l.relevanceScore},"${l.queryUsed}",${l.scrapedAt}`
+    const result = await storage.getLeads({ page: 1, limit: 10000, qualified: 'all' });
+    const csvHeader = "ID,Platform,Username,Name,Title,Company,Business Type,Profile URL,Followers,Bio,Email,Qualified,Score,Context Summary,Job ID,Scraped At\n";
+    const csvRows = result.leads.map(l => 
+      `${l.id},${l.platform},"${l.username}","${l.name || ''}","${l.title || ''}","${l.company || ''}","${l.businessType || ''}",${l.profileUrl},${l.followerCount},"${(l.bio || '').replace(/"/g, '""')}",${l.email || ''},${l.isQualified},${l.relevanceScore},"${(l.contextSummary || '').replace(/"/g, '""')}",${l.jobId || ''},${l.scrapedAt}`
     ).join("\n");
     
     res.header('Content-Type', 'text/csv');

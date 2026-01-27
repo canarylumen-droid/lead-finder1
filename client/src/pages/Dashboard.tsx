@@ -1,37 +1,77 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { scrapeRequestSchema, type ScrapeRequest } from "@shared/schema";
-import { useLeads, useScrapeLeads, useStats, getExportUrl, useProxyStatus } from "@/hooks/use-leads";
+import { scrapeRequestSchema, type ScrapeRequest, type LogEntry } from "@shared/schema";
+import { useLeads, useScrapeLeads, useStats, getExportUrl, useJobWebSocket } from "@/hooks/use-leads";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LeadCard } from "@/components/LeadCard";
 import { StatsCard } from "@/components/StatsCard";
-import { Loader2, Search, Download, Target, Users, BarChart3, Sparkles, AlertTriangle, Shield } from "lucide-react";
-import { ThemeToggle } from "@/components/ThemeToggle";
+import { Loader2, Search, Download, Target, Users, BarChart3, Sparkles, Terminal, Copy, CheckCircle, XCircle, AlertCircle, Info, ChevronLeft, ChevronRight } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useToast } from "@/hooks/use-toast";
+import { ThemeToggle } from "@/components/ThemeToggle";
+
+function LogLine({ log }: { log: LogEntry }) {
+  const getIcon = () => {
+    switch (log.level) {
+      case 'success': return <CheckCircle className="w-3 h-3 text-green-500" />;
+      case 'error': return <XCircle className="w-3 h-3 text-red-500" />;
+      case 'warn': return <AlertCircle className="w-3 h-3 text-amber-500" />;
+      default: return <Info className="w-3 h-3 text-blue-500" />;
+    }
+  };
+
+  const getColor = () => {
+    switch (log.level) {
+      case 'success': return 'text-green-400';
+      case 'error': return 'text-red-400';
+      case 'warn': return 'text-amber-400';
+      default: return 'text-gray-300';
+    }
+  };
+
+  return (
+    <div className="flex items-start gap-2 text-xs font-mono py-0.5">
+      <span className="text-gray-500 shrink-0">
+        {log.workerId !== undefined ? `[W${log.workerId}]` : '[SYS]'}
+      </span>
+      {getIcon()}
+      <span className={getColor()}>{log.message}</span>
+    </div>
+  );
+}
 
 export default function Dashboard() {
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState("all");
+  const [activeTab, setActiveTab] = useState<'all' | 'qualified' | 'unqualified'>("all");
+  const [page, setPage] = useState(1);
+  const [currentJobId, setCurrentJobId] = useState<number | null>(null);
+  const terminalRef = useRef<HTMLDivElement>(null);
   
-  const { data: leads, isLoading: isLoadingLeads } = useLeads();
+  const { data: leadsData, isLoading: isLoadingLeads } = useLeads(page, 20, activeTab);
   const { data: stats, isLoading: isLoadingStats } = useStats();
-  const { data: proxyStatus } = useProxyStatus();
   const scrapeMutation = useScrapeLeads();
+  const { logs, stats: jobStats, isComplete } = useJobWebSocket(currentJobId);
+
+  // Auto-scroll terminal
+  useEffect(() => {
+    if (terminalRef.current) {
+      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+    }
+  }, [logs]);
 
   const form = useForm<ScrapeRequest>({
     resolver: zodResolver(scrapeRequestSchema),
     defaultValues: {
       platform: "instagram",
       query: "",
-      quantity: 10,
+      quantity: 50,
       offering: "",
     },
   });
@@ -39,15 +79,10 @@ export default function Dashboard() {
   const onSubmit = (data: ScrapeRequest) => {
     scrapeMutation.mutate(data, {
       onSuccess: (response) => {
-        if (response.error) {
+        if (response.jobId) {
+          setCurrentJobId(parseInt(response.jobId));
           toast({
-            title: "Configuration Required",
-            description: response.message,
-            variant: "destructive",
-          });
-        } else {
-          toast({
-            title: "Scraping Complete",
+            title: "Job Started",
             description: response.message,
           });
         }
@@ -62,15 +97,18 @@ export default function Dashboard() {
     });
   };
 
-  const filteredLeads = leads?.filter(lead => {
-    if (activeTab === "qualified") return lead.isQualified;
-    if (activeTab === "unqualified") return !lead.isQualified;
-    return true;
-  });
+  const copyLogs = () => {
+    const logText = logs.map(l => `[${l.workerId !== undefined ? `W${l.workerId}` : 'SYS'}] ${l.message}`).join('\n');
+    navigator.clipboard.writeText(logText);
+    toast({ title: "Logs copied to clipboard" });
+  };
+
+  const leads = leadsData?.leads || [];
+  const totalPages = leadsData?.totalPages || 1;
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-background to-muted/30 pb-20">
-      {/* Hero Header */}
+      {/* Header */}
       <div className="bg-background border-b border-border/40 sticky top-0 z-10 backdrop-blur-md bg-background/80 supports-[backdrop-filter]:bg-background/60">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex justify-between items-center">
@@ -97,40 +135,6 @@ export default function Dashboard() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
         
-        {/* Proxy Status Banner */}
-        {proxyStatus && !proxyStatus.configured && (
-          <Card className="border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800">
-            <CardContent className="flex items-start gap-4 py-4">
-              <div className="p-2 bg-amber-100 dark:bg-amber-900/50 rounded-lg">
-                <AlertTriangle className="w-5 h-5 text-amber-600" />
-              </div>
-              <div className="flex-1">
-                <h3 className="font-semibold text-amber-800 dark:text-amber-200">Proxy Configuration Required</h3>
-                <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">
-                  Real scraping requires rotating proxies to bypass rate limits. Set environment variables:
-                </p>
-                <code className="text-xs bg-amber-100 dark:bg-amber-900/50 px-2 py-1 rounded mt-2 inline-block font-mono">
-                  PROXY_HOST, PROXY_PORT, PROXY_USERNAME, PROXY_PASSWORD
-                </code>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {proxyStatus?.configured && (
-          <Card className="border-green-200 bg-green-50 dark:bg-green-950/20 dark:border-green-800">
-            <CardContent className="flex items-center gap-4 py-3">
-              <div className="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                <Shield className="w-5 h-5 text-green-600" />
-              </div>
-              <div>
-                <span className="font-medium text-green-800 dark:text-green-200">Proxy Connected</span>
-                <span className="text-sm text-green-600 dark:text-green-400 ml-2">Ready for real-time scraping</span>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
         {/* Stats Row */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <StatsCard
@@ -143,7 +147,7 @@ export default function Dashboard() {
           <StatsCard
             title="Qualified Leads"
             value={isLoadingStats ? "..." : (stats?.qualified ?? 0)}
-            description="High relevance matches"
+            description="AI-verified matches"
             icon={Target}
             trend="up"
           />
@@ -168,7 +172,7 @@ export default function Dashboard() {
                   New Search
                 </CardTitle>
                 <CardDescription>
-                  Define your target audience and we'll find the best leads.
+                  Define your target audience and we'll find qualified leads.
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -184,7 +188,7 @@ export default function Dashboard() {
                           <FormControl>
                             <Textarea 
                               placeholder="e.g. We provide SEO services for dental clinics..." 
-                              className="resize-none min-h-[80px] bg-muted/30 focus:bg-white transition-colors"
+                              className="resize-none min-h-[80px] bg-muted/30 focus:bg-background transition-colors"
                               {...field} 
                             />
                           </FormControl>
@@ -202,7 +206,7 @@ export default function Dashboard() {
                             <FormLabel>Platform</FormLabel>
                             <Select onValueChange={field.onChange} defaultValue={field.value}>
                               <FormControl>
-                                <SelectTrigger className="bg-muted/30">
+                                <SelectTrigger className="bg-muted/30" data-testid="select-platform">
                                   <SelectValue placeholder="Select platform" />
                                 </SelectTrigger>
                               </FormControl>
@@ -228,14 +232,16 @@ export default function Dashboard() {
                               defaultValue={String(field.value)}
                             >
                               <FormControl>
-                                <SelectTrigger className="bg-muted/30">
+                                <SelectTrigger className="bg-muted/30" data-testid="select-quantity">
                                   <SelectValue placeholder="Amount" />
                                 </SelectTrigger>
                               </FormControl>
                               <SelectContent>
-                                <SelectItem value="10">10 Leads</SelectItem>
                                 <SelectItem value="50">50 Leads</SelectItem>
                                 <SelectItem value="100">100 Leads</SelectItem>
+                                <SelectItem value="250">250 Leads</SelectItem>
+                                <SelectItem value="500">500 Leads</SelectItem>
+                                <SelectItem value="1000">1000 Leads</SelectItem>
                               </SelectContent>
                             </Select>
                             <FormMessage />
@@ -255,7 +261,8 @@ export default function Dashboard() {
                               <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                               <Input 
                                 placeholder="e.g. Dentists in New York" 
-                                className="pl-9 bg-muted/30 focus:bg-white transition-colors"
+                                className="pl-9 bg-muted/30 focus:bg-background transition-colors"
+                                data-testid="input-query"
                                 {...field} 
                               />
                             </div>
@@ -269,11 +276,12 @@ export default function Dashboard() {
                       type="submit" 
                       className="w-full bg-gradient-to-r from-primary to-violet-600 hover:from-primary/90 hover:to-violet-600/90 shadow-lg shadow-primary/25"
                       disabled={scrapeMutation.isPending}
+                      data-testid="button-submit"
                     >
                       {scrapeMutation.isPending ? (
                         <>
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Finding Leads...
+                          Starting...
                         </>
                       ) : (
                         "Start Hunting"
@@ -283,18 +291,57 @@ export default function Dashboard() {
                 </Form>
               </CardContent>
             </Card>
+
+            {/* Terminal Log Panel */}
+            {currentJobId && (
+              <Card className="border-border/50 overflow-hidden">
+                <CardHeader className="py-3 px-4 flex flex-row items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Terminal className="w-4 h-4 text-primary" />
+                    <span className="font-medium text-sm">Live Logs</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {jobStats && (
+                      <div className="flex items-center gap-3 text-xs">
+                        <span className="text-green-500">{jobStats.processedCount} found</span>
+                        <span className="text-amber-500">{jobStats.duplicatesSkipped} dupes</span>
+                        <span className="text-blue-500">{jobStats.activeWorkers}/{jobStats.totalWorkers} workers</span>
+                      </div>
+                    )}
+                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={copyLogs} data-testid="button-copy-logs">
+                      <Copy className="w-3 h-3" />
+                    </Button>
+                  </div>
+                </CardHeader>
+                <div 
+                  ref={terminalRef}
+                  className="bg-gray-900 dark:bg-gray-950 p-3 h-64 overflow-y-auto"
+                >
+                  {logs.length === 0 ? (
+                    <div className="text-gray-500 text-xs font-mono">Waiting for logs...</div>
+                  ) : (
+                    logs.map((log, i) => <LogLine key={i} log={log} />)
+                  )}
+                  {isComplete && (
+                    <div className="text-green-400 text-xs font-mono mt-2 pt-2 border-t border-gray-700">
+                      Job completed successfully.
+                    </div>
+                  )}
+                </div>
+              </Card>
+            )}
           </div>
 
           {/* Results Panel */}
           <div className="lg:col-span-8">
             <div className="flex flex-col h-full space-y-6">
-              <div className="flex items-center justify-between">
-                <h2 className="text-2xl font-bold font-display">Recent Results</h2>
-                <Tabs defaultValue="all" value={activeTab} onValueChange={setActiveTab} className="w-[400px]">
-                  <TabsList className="grid w-full grid-cols-3 bg-muted/50">
-                    <TabsTrigger value="all">All</TabsTrigger>
-                    <TabsTrigger value="qualified">Qualified</TabsTrigger>
-                    <TabsTrigger value="unqualified">Low Match</TabsTrigger>
+              <div className="flex items-center justify-between gap-4 flex-wrap">
+                <h2 className="text-2xl font-bold font-display">Leads</h2>
+                <Tabs defaultValue="all" value={activeTab} onValueChange={(v) => { setActiveTab(v as any); setPage(1); }} className="w-auto">
+                  <TabsList className="bg-muted/50">
+                    <TabsTrigger value="all" data-testid="tab-all">All ({leadsData?.total || 0})</TabsTrigger>
+                    <TabsTrigger value="qualified" data-testid="tab-qualified">Qualified</TabsTrigger>
+                    <TabsTrigger value="unqualified" data-testid="tab-unqualified">Low Match</TabsTrigger>
                   </TabsList>
                 </Tabs>
               </div>
@@ -304,7 +351,7 @@ export default function Dashboard() {
                   <Loader2 className="h-12 w-12 animate-spin mb-4 text-primary/50" />
                   <p>Fetching your leads...</p>
                 </div>
-              ) : !filteredLeads?.length ? (
+              ) : !leads?.length ? (
                 <div className="flex-1 flex flex-col items-center justify-center min-h-[400px] bg-muted/20 rounded-xl border border-dashed border-border p-12 text-center">
                   <div className="w-16 h-16 bg-muted rounded-full flex items-center justify-center mb-4">
                     <Search className="h-8 w-8 text-muted-foreground" />
@@ -315,13 +362,44 @@ export default function Dashboard() {
                   </p>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 auto-rows-fr">
-                  <AnimatePresence mode="popLayout">
-                    {filteredLeads.map((lead, index) => (
-                      <LeadCard key={lead.id} lead={lead} index={index} />
-                    ))}
-                  </AnimatePresence>
-                </div>
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 auto-rows-fr">
+                    <AnimatePresence mode="popLayout">
+                      {leads.map((lead, index) => (
+                        <LeadCard key={lead.id} lead={lead} index={index} />
+                      ))}
+                    </AnimatePresence>
+                  </div>
+                  
+                  {/* Pagination */}
+                  {totalPages > 1 && (
+                    <div className="flex items-center justify-center gap-2 pt-4">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setPage(p => Math.max(1, p - 1))}
+                        disabled={page === 1}
+                        data-testid="button-prev-page"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                        Previous
+                      </Button>
+                      <span className="text-sm text-muted-foreground px-4">
+                        Page {page} of {totalPages}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                        disabled={page === totalPages}
+                        data-testid="button-next-page"
+                      >
+                        Next
+                        <ChevronRight className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>

@@ -2,7 +2,7 @@ import { forwardRef } from "react";
 import { type Lead } from "@shared/schema";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Instagram, Linkedin, User, Users, Mail, ExternalLink, CheckCircle2, XCircle } from "lucide-react";
+import { Instagram, Linkedin, User, Users, Mail, ExternalLink, CheckCircle2, XCircle, Building2 } from "lucide-react";
 import { motion } from "framer-motion";
 
 interface LeadCardProps {
@@ -61,11 +61,27 @@ const LeadCardInner = forwardRef<HTMLDivElement, LeadCardProps>(({ lead, index }
             </div>
           </div>
 
+          {lead.businessType && lead.businessType !== 'unknown' && (
+            <Badge variant="outline" className="text-xs capitalize">
+              <Building2 size={10} className="mr-1" />
+              {lead.businessType}
+            </Badge>
+          )}
+
+          {lead.contextSummary && (
+            <div className="space-y-1">
+              <div className="text-xs font-medium text-muted-foreground">AI Analysis</div>
+              <p className="text-sm text-foreground/80 leading-relaxed">
+                {lead.contextSummary}
+              </p>
+            </div>
+          )}
+
           <div className="space-y-2">
             <div className="text-sm font-medium text-muted-foreground flex items-center gap-2">
               <User size={14} /> Bio
             </div>
-            <p className="text-sm line-clamp-3 text-foreground/80 leading-relaxed min-h-[4.5em]">
+            <p className="text-sm line-clamp-2 text-foreground/80 leading-relaxed">
               {lead.bio || "No bio available"}
             </p>
           </div>
