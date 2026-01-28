@@ -1,9 +1,17 @@
 import OpenAI from "openai";
 
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
+// Standard OpenAI API - uses OPENAI_API_KEY from environment (Vercel compatible)
+// Lazy initialization to prevent crashes when key isn't set
+let openaiClient: OpenAI | null = null;
+
+function getOpenAI(): OpenAI | null {
+  if (!openaiClient && process.env.OPENAI_API_KEY) {
+    openaiClient = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+  }
+  return openaiClient;
+}
 
 interface ProfileData {
   platform: string;
@@ -57,6 +65,12 @@ Respond in JSON format:
   "contextSummary": "string",
   "reasoning": "string"
 }`;
+
+    const openai = getOpenAI();
+    if (!openai) {
+      console.log("OpenAI API key not configured - using fallback analysis");
+      return fallbackAnalysis(profile, offering);
+    }
 
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
