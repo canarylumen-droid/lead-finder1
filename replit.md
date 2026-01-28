@@ -54,9 +54,9 @@ Preferred communication style: Simple, everyday language.
 - Session storage: connect-pg-simple
 
 ## AI Services
-- OpenAI API through Replit AI Integrations
-- Environment variables: AI_INTEGRATIONS_OPENAI_API_KEY, AI_INTEGRATIONS_OPENAI_BASE_URL
-- Used for: profile analysis, lead qualification scoring, image generation, text-to-speech, speech-to-text
+- OpenAI API (standard format for Vercel deployment)
+- Environment variable: OPENAI_API_KEY
+- Used for: offering analysis, profile analysis, lead qualification scoring, buyer intent detection
 
 ## Web Scraping
 - Cheerio for HTML parsing
