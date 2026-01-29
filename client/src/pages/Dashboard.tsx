@@ -361,6 +361,7 @@ export default function Dashboard() {
                         <option value="250">250 leads</option>
                         <option value="500">500 leads</option>
                         <option value="1000">1000 leads</option>
+                        <option value="2000">2000 leads</option>
                       </select>
                     </div>
                   </div>
@@ -432,6 +433,7 @@ export default function Dashboard() {
                         <option value="250">250 leads</option>
                         <option value="500">500 leads</option>
                         <option value="1000">1000 leads</option>
+                        <option value="2000">2000 leads</option>
                       </select>
                     </div>
                   </div>
